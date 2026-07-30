@@ -1,0 +1,10 @@
+{"timestamp":"2026-07-01T10:00:00Z","type":"session_meta","payload":{"id":"aaaaaaaa-1111-2222-3333-444444444444","cwd":"/Users/test/alpha","cli_version":"0.120.0"}}
+{"timestamp":"2026-07-01T10:00:01Z","type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"INJECTED_SECRET"}]}}
+{"timestamp":"2026-07-01T10:00:02Z","type":"event_msg","payload":{"type":"user_message","message":"Fix the login bug","images":[]}}
+{"timestamp":"2026-07-01T10:00:03Z","type":"response_item","payload":{"type":"reasoning","summary":[{"type":"summary_text","text":"PRIVATE_REASONING"}],"encrypted_content":"ciphertext"}}
+{"timestamp":"2026-07-01T10:00:04Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","call_id":"call-1","arguments":"{\"cmd\":\"cargo test\",\"justification\":\"verify the fix\"}"}}
+{"timestamp":"2026-07-01T10:00:05Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call-1","output":"tests passed"}}
+{"timestamp":"2026-07-01T10:00:06Z","type":"response_item","payload":{"type":"custom_tool_call","name":"apply_patch","call_id":"call-2","input":"*** Begin Patch\n*** Update File: src/login.rs\n@@\n-old\n+new\n*** End Patch\n"}}
+{"timestamp":"2026-07-01T10:00:07Z","type":"event_msg","payload":{"type":"agent_message","message":"Fixed the login bug.","phase":"final_answer"}}
+not-json
+
