@@ -114,8 +114,8 @@ fn summarize(scope: &Scope, session: &SessionFile) -> Summary {
         if model::assistant_message(value).is_some() {
             summary.assistant_messages += 1;
         }
-        if model::tool_call(value).is_some() {
-            summary.tools += 1;
+        if let Some(call) = model::tool_call(value) {
+            summary.tools += expanded_tool_calls(&call).len();
         }
     });
     warn_read(session, result);
@@ -161,19 +161,21 @@ pub fn bash(scope: &Scope, files: &[SessionFile], pattern: Option<&Regex>) -> Ta
             let Some(call) = model::tool_call(value) else {
                 return;
             };
-            let description = string_field(&call.input, "justification")
-                .or_else(|| string_field(&call.input, "description"))
-                .unwrap_or("");
-            for command in shell_commands(&call) {
-                if pattern.is_none_or(|pattern| pattern.is_match(&command)) {
-                    rows.push(vec![
-                        model::timestamp(value).unwrap_or("").to_owned(),
-                        short_id(&session.id),
-                        session.project.clone(),
-                        call.name.clone(),
-                        description.to_owned(),
-                        command,
-                    ]);
+            for effective_call in expanded_tool_calls(&call) {
+                let description = string_field(&effective_call.input, "justification")
+                    .or_else(|| string_field(&effective_call.input, "description"))
+                    .unwrap_or("");
+                for command in shell_commands(&effective_call) {
+                    if pattern.is_none_or(|pattern| pattern.is_match(&command)) {
+                        rows.push(vec![
+                            model::timestamp(value).unwrap_or("").to_owned(),
+                            short_id(&session.id),
+                            session.project.clone(),
+                            effective_call.name.clone(),
+                            description.to_owned(),
+                            command,
+                        ]);
+                    }
                 }
             }
         });
@@ -192,15 +194,17 @@ pub fn writes(scope: &Scope, files: &[SessionFile], pattern: Option<&Regex>) -> 
             let Some(call) = model::tool_call(value) else {
                 return;
             };
-            for path in written_paths(&call) {
-                if pattern.is_none_or(|pattern| pattern.is_match(&path)) {
-                    rows.push(vec![
-                        model::timestamp(value).unwrap_or("").to_owned(),
-                        short_id(&session.id),
-                        session.project.clone(),
-                        call.name.clone(),
-                        path,
-                    ]);
+            for effective_call in expanded_tool_calls(&call) {
+                for path in written_paths(&effective_call) {
+                    if pattern.is_none_or(|pattern| pattern.is_match(&path)) {
+                        rows.push(vec![
+                            model::timestamp(value).unwrap_or("").to_owned(),
+                            short_id(&session.id),
+                            session.project.clone(),
+                            effective_call.name.clone(),
+                            path,
+                        ]);
+                    }
                 }
             }
         });
@@ -216,7 +220,17 @@ pub fn tools(scope: &Scope, files: &[SessionFile]) -> Table {
         let mut rows = Vec::new();
         let result = scan::for_each_event(session, scope, |_, value| {
             if let Some(call) = model::tool_call(value) {
-                rows.push((call.name, session.project.clone(), session.id.clone()));
+                rows.extend(
+                    expanded_tool_calls(&call)
+                        .into_iter()
+                        .map(|effective_call| {
+                            (
+                                effective_call.name,
+                                session.project.clone(),
+                                session.id.clone(),
+                            )
+                        }),
+                );
             }
         });
         warn_read(session, result);
@@ -378,6 +392,16 @@ fn shell_commands(call: &ToolCall) -> Vec<String> {
             .map(|command| vec![command.to_owned()])
             .unwrap_or_default();
     }
+    Vec::new()
+}
+
+fn expanded_tool_calls(call: &ToolCall) -> Vec<ToolCall> {
+    let mut calls = vec![call.clone()];
+    calls.extend(nested_tool_calls(call));
+    calls
+}
+
+fn nested_tool_calls(call: &ToolCall) -> Vec<ToolCall> {
     if call.name != "exec" {
         return Vec::new();
     }
@@ -388,21 +412,142 @@ fn shell_commands(call: &ToolCall) -> Vec<String> {
     else {
         return Vec::new();
     };
-    nested_command_regex()
+
+    nested_tool_regex()
         .captures_iter(code)
-        .filter_map(|captures| captures.name("quoted"))
-        .filter_map(|quoted| serde_json::from_str::<String>(quoted.as_str()).ok())
+        .filter_map(|captures| {
+            let whole = captures.get(0)?;
+            if !is_js_code_position(code, whole.start()) {
+                return None;
+            }
+            let name = captures.name("name")?.as_str().to_owned();
+            let argument = first_js_argument(code, whole.end());
+            let input = nested_input(&code[..whole.start()], argument);
+            Some(ToolCall { name, input })
+        })
         .collect()
 }
 
-fn nested_command_regex() -> &'static Regex {
+fn nested_tool_regex() -> &'static Regex {
     static REGEX: OnceLock<Regex> = OnceLock::new();
     REGEX.get_or_init(|| {
-        Regex::new(
-            r#"exec_command\s*\(\s*\{(?s:.*?)["']cmd["']\s*:\s*(?<quoted>"(?:\\.|[^"\\])*")"#,
-        )
-        .expect("valid command extraction regex")
+        Regex::new(r"tools\.(?<name>[A-Za-z_$][A-Za-z0-9_$]*)\s*\(")
+            .expect("valid nested tool regex")
     })
+}
+
+fn first_js_argument(code: &str, start: usize) -> &str {
+    let bytes = code.as_bytes();
+    let mut index = start;
+    let mut quote = None;
+    let mut escaped = false;
+    let mut braces = 0usize;
+    let mut brackets = 0usize;
+    let mut parens = 0usize;
+
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if let Some(active_quote) = quote {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == active_quote {
+                quote = None;
+            }
+            index += 1;
+            continue;
+        }
+        match byte {
+            b'\'' | b'"' | b'`' => quote = Some(byte),
+            b'{' => braces += 1,
+            b'}' => braces = braces.saturating_sub(1),
+            b'[' => brackets += 1,
+            b']' => brackets = brackets.saturating_sub(1),
+            b'(' => parens += 1,
+            b')' | b',' if braces == 0 && brackets == 0 && parens == 0 => break,
+            b')' => parens = parens.saturating_sub(1),
+            _ => {}
+        }
+        index += 1;
+    }
+    code[start..index].trim()
+}
+
+fn nested_input(prefix: &str, argument: &str) -> Value {
+    if let Ok(value) = serde_json::from_str(argument) {
+        return value;
+    }
+    if is_js_identifier(argument) {
+        return resolve_string_variable(prefix, argument)
+            .map_or_else(|| Value::String(argument.to_owned()), Value::String);
+    }
+    if argument.starts_with('{') {
+        let mut object = serde_json::Map::new();
+        for captures in js_object_string_field_regex().captures_iter(argument) {
+            let Some(key) = captures.name("key") else {
+                continue;
+            };
+            let Some(quoted) = captures.name("quoted") else {
+                continue;
+            };
+            if let Ok(value) = serde_json::from_str::<String>(quoted.as_str()) {
+                object.insert(key.as_str().to_owned(), Value::String(value));
+            }
+        }
+        return Value::Object(object);
+    }
+    Value::String(argument.to_owned())
+}
+
+fn js_object_string_field_regex() -> &'static Regex {
+    static REGEX: OnceLock<Regex> = OnceLock::new();
+    REGEX.get_or_init(|| {
+        Regex::new(r#"(?<key>[A-Za-z_$][A-Za-z0-9_$]*)\s*:\s*(?<quoted>"(?:\\.|[^"\\])*")"#)
+            .expect("valid JavaScript object field regex")
+    })
+}
+
+fn is_js_identifier(value: &str) -> bool {
+    let mut chars = value.chars();
+    chars
+        .next()
+        .is_some_and(|first| first == '_' || first == '$' || first.is_ascii_alphabetic())
+        && chars.all(|character| {
+            character == '_' || character == '$' || character.is_ascii_alphanumeric()
+        })
+}
+
+fn resolve_string_variable(prefix: &str, name: &str) -> Option<String> {
+    let pattern = format!(
+        r#"(?:const|let|var)\s+{}\s*=\s*(?<quoted>"(?:\\.|[^"\\])*")"#,
+        regex::escape(name)
+    );
+    let regex = Regex::new(&pattern).ok()?;
+    regex
+        .captures_iter(prefix)
+        .last()?
+        .name("quoted")
+        .and_then(|quoted| serde_json::from_str(quoted.as_str()).ok())
+}
+
+fn is_js_code_position(code: &str, target: usize) -> bool {
+    let mut quote = None;
+    let mut escaped = false;
+    for &byte in &code.as_bytes()[..target] {
+        if let Some(active_quote) = quote {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == active_quote {
+                quote = None;
+            }
+        } else if matches!(byte, b'\'' | b'"' | b'`') {
+            quote = Some(byte);
+        }
+    }
+    quote.is_none()
 }
 
 fn written_paths(call: &ToolCall) -> Vec<String> {
@@ -491,7 +636,10 @@ mod tests {
                 "code": r#"const r = await tools.exec_command({"cmd":"cargo test","yield_time_ms":10000}); text(r.output);"#
             }),
         };
-        assert_eq!(shell_commands(&call), vec!["cargo test"]);
+        let nested = nested_tool_calls(&call);
+        assert_eq!(nested.len(), 1);
+        assert_eq!(nested[0].name, "exec_command");
+        assert_eq!(shell_commands(&nested[0]), vec!["cargo test"]);
     }
 
     #[test]
@@ -503,7 +651,51 @@ mod tests {
                     .to_owned(),
             ),
         };
-        assert_eq!(shell_commands(&call), vec!["cargo clippy"]);
+        let nested = nested_tool_calls(&call);
+        assert_eq!(nested.len(), 1);
+        assert_eq!(shell_commands(&nested[0]), vec!["cargo clippy"]);
+    }
+
+    #[test]
+    fn extracts_chatgpt_app_shell_commands() {
+        let call = ToolCall {
+            name: "exec".to_owned(),
+            input: Value::String(
+                r#"const r = await tools.shell_command({command:"cargo test --all-targets",workdir:"C:\\repo",timeout_ms:20000}); text(r);"#
+                    .to_owned(),
+            ),
+        };
+        let nested = nested_tool_calls(&call);
+        assert_eq!(nested.len(), 1);
+        assert_eq!(nested[0].name, "shell_command");
+        assert_eq!(shell_commands(&nested[0]), vec!["cargo test --all-targets"]);
+    }
+
+    #[test]
+    fn extracts_chatgpt_app_patch_variable() {
+        let call = ToolCall {
+            name: "exec".to_owned(),
+            input: Value::String(
+                r#"const patch = "*** Begin Patch\n*** Add File: src/app.rs\n*** End Patch"; text(await tools.apply_patch(patch));"#
+                    .to_owned(),
+            ),
+        };
+        let nested = nested_tool_calls(&call);
+        assert_eq!(nested.len(), 1);
+        assert_eq!(nested[0].name, "apply_patch");
+        assert_eq!(written_paths(&nested[0]), vec!["src/app.rs"]);
+    }
+
+    #[test]
+    fn ignores_tool_syntax_inside_javascript_strings() {
+        let call = ToolCall {
+            name: "exec".to_owned(),
+            input: Value::String(
+                r#"const example = "tools.shell_command({command:\"do not count\"})"; text(example);"#
+                    .to_owned(),
+            ),
+        };
+        assert!(nested_tool_calls(&call).is_empty());
     }
 
     #[test]

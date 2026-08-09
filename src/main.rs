@@ -11,6 +11,7 @@ use out::Format;
 use regex::Regex;
 use scan::Scope;
 use std::env;
+use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -214,13 +215,50 @@ fn compile_optional(pattern: Option<&str>) -> Result<Option<Regex>, String> {
 }
 
 fn default_codex_home() -> PathBuf {
-    env::var_os("CODEX_HOME").map_or_else(
+    codex_home_from_env(
+        env::var_os("CODEX_HOME"),
+        env::var_os("HOME"),
+        env::var_os("USERPROFILE"),
+    )
+}
+
+fn codex_home_from_env(
+    codex_home: Option<OsString>,
+    home: Option<OsString>,
+    user_profile: Option<OsString>,
+) -> PathBuf {
+    codex_home.map_or_else(
         || {
-            env::var_os("HOME").map_or_else(
+            home.or(user_profile).map_or_else(
                 || PathBuf::from(".codex"),
                 |home| PathBuf::from(home).join(".codex"),
             )
         },
         PathBuf::from,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn codex_home_override_wins() {
+        assert_eq!(
+            codex_home_from_env(
+                Some(OsString::from("custom")),
+                Some(OsString::from("home")),
+                Some(OsString::from("profile")),
+            ),
+            PathBuf::from("custom")
+        );
+    }
+
+    #[test]
+    fn user_profile_is_the_windows_home_fallback() {
+        assert_eq!(
+            codex_home_from_env(None, None, Some(OsString::from("profile"))),
+            PathBuf::from("profile").join(".codex")
+        );
+    }
 }

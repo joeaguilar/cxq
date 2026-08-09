@@ -16,6 +16,18 @@ cargo install --path .
 
 Or run `./install.sh` from a checkout to install into `${CARGO_HOME:-~/.cargo}/bin`.
 
+On Windows, install Rust first and run the PowerShell installer:
+
+```powershell
+winget install Rustlang.Rustup
+# Restart PowerShell after the Rust install, then:
+.\install.ps1
+```
+
+The installer builds `cxq.exe`, installs it into `%CARGO_HOME%\bin` (or
+`%USERPROFILE%\.cargo\bin`), and adds that directory to the persistent user
+PATH when needed.
+
 ## Commands
 
 | Command | Result |
@@ -28,6 +40,12 @@ Or run `./install.sh` from a checkout to install into `${CARGO_HOME:-~/.cargo}/b
 | `cxq tools` | tool-use frequency by project and session |
 | `cxq grep <regex>` | pointers into visible messages, tool calls, and results |
 | `cxq show <session-prefix>` | safe transcript view for one session |
+
+For Codex/ChatGPT app sessions, `cxq` expands the app's outer `exec` wrapper
+when it can statically identify nested `tools.<name>(...)` calls. This makes
+`bash`, `writes`, session tool totals, and `tools` report app activity alongside
+direct CLI tool calls. Dynamic JavaScript dispatch remains visible through
+`grep` and `show`, but is not guessed into a tool identity.
 
 Common filters can appear before or after the subcommand:
 
@@ -66,4 +84,3 @@ results remain queryable because they are the purpose of the forensic commands.
 `cxq` covers history stored locally in the selected Codex home, including CLI,
 app, IDE, exec, subagent, active, and archived rollout files that exist there.
 It is not an account-wide ChatGPT or Codex Cloud history API.
-

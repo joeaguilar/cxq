@@ -30,7 +30,10 @@ payload types `user_message` and `agent_message`. This avoids treating injected
 Tool calls come from `response_item` payload types `function_call` and
 `custom_tool_call`. JSON-encoded argument strings are normalized into JSON
 values. Direct `exec_command` calls expose `cmd`; newer orchestrated `exec`
-calls are inspected for nested `tools.exec_command({"cmd": ...})` calls.
+calls are inspected for statically invoked nested tools. This includes the
+Codex/ChatGPT app's `tools.shell_command({command: ...})` calls and patch text
+passed to `tools.apply_patch(...)` through a local JavaScript string variable.
+The outer `exec` and each statically identified nested tool are both counted.
 
 Explicit patch and write tools drive `writes`. Shell redirections inside a
 command are intentionally not inferred as file writes.
@@ -46,9 +49,7 @@ command are intentionally not inferred as file writes.
 
 ## Compatibility strategy
 
-The transcript path is documented by OpenAI, but the transcript format is not a
-stable interface. Fixtures therefore represent observed semantic shapes rather
-than exhaustive schemas. New event variants should degrade to omitted fields,
-not failed scans. `cli_version` is surfaced by `sessions` to make regressions
-diagnosable.
-
+The transcript format is not a stable public interface. Fixtures therefore
+represent observed semantic shapes rather than exhaustive schemas. New event
+variants should degrade to omitted fields, not failed scans. `cli_version` is
+surfaced by `sessions` to make regressions diagnosable.

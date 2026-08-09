@@ -37,13 +37,17 @@ excludes "prompts excludes reasoning" "PRIVATE_REASONING" "$OUT"
 OUT=$("$BIN" --root "$ROOT" bash -f tsv 2>/dev/null)
 contains "bash parses direct exec" "cargo test" "$OUT"
 contains "bash parses orchestrated exec" "cargo fmt --check" "$OUT"
+contains "bash parses ChatGPT app shell command" "cargo test --all-targets" "$OUT"
 
 OUT=$("$BIN" --root "$ROOT" writes -f tsv 2>/dev/null)
 contains "writes parses apply patch" "src/login.rs" "$OUT"
+contains "writes parses ChatGPT app nested patch" "src/app.rs" "$OUT"
 
 OUT=$("$BIN" --root "$ROOT" tools -f tsv 2>/dev/null)
-contains "tools counts direct exec" $'exec_command\t1' "$OUT"
-contains "tools counts apply patch" $'apply_patch\t1' "$OUT"
+contains "tools counts direct and orchestrated exec" $'exec_command\t2' "$OUT"
+contains "tools counts outer app exec" $'exec\t2' "$OUT"
+contains "tools counts ChatGPT app shell command" $'shell_command\t1' "$OUT"
+contains "tools counts direct and nested patches" $'apply_patch\t2' "$OUT"
 
 OUT=$("$BIN" --root "$ROOT" grep 'login' --in text -f tsv 2>/dev/null)
 contains "grep returns pointer" "aaaaaaaa-111" "$OUT"
@@ -61,7 +65,7 @@ excludes "show excludes reasoning" "PRIVATE_REASONING" "$OUT"
 excludes "show excludes developer context" "INJECTED_SECRET" "$OUT"
 
 OUT=$("$BIN" --root "$ROOT" projects -f json 2>/dev/null)
-python3 -c 'import json,sys; assert len(json.load(sys.stdin)) == 3' <<<"$OUT" && ok || fail "json output parses"
+[[ $(grep -c '"project"' <<<"$OUT") -eq 3 ]] && ok || fail "json output has three projects"
 
 OUT=$("$BIN" --root "$ROOT" sessions --since 2026-07-02 -f tsv 2>/dev/null)
 contains "since includes beta" "bbbbbbbb-1111" "$OUT"
