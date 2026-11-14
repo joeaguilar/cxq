@@ -1,0 +1,8 @@
+# Catalog manifest, read by ../_catalog/catalog.py. Draft: correct anything that is wrong.
+name = "cxq"
+title = "cxq"
+kind = "tool"
+stack = ["rust"]
+status = "parked"
+summary = "Read-only CLI for querying local Codex session history."
+run = "cxq --help"
